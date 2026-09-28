@@ -14,6 +14,7 @@ import {
   TipoMovimientoStock,
 } from '../inventario/entities/movimiento-stock.entity';
 import { CreateVentaDto } from './dto/create-venta.dto';
+import { CacheService } from '../redis/cache.service';
 
 interface CrearVentaOpts {
   canal: CanalVenta;
@@ -28,6 +29,7 @@ export class VentasService {
     private readonly ventaRepository: Repository<Venta>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly cache: CacheService,
   ) {}
 
   // Venta online: el cliente arma el carrito en el frontend y solo al
@@ -39,7 +41,13 @@ export class VentasService {
       throw new BadRequestException('La venta online requiere un cliente autenticado');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    // Une líneas repetidas del mismo producto y las ordena por id: (1) el stock se valida sobre el total real y
+    // (2) todas las transacciones bloquean filas en el mismo orden, lo que evita deadlocks entre ventas simultáneas.
+    const porProducto = new Map<number, number>();
+    for (const l of dto.detalles) porProducto.set(l.productoId, (porProducto.get(l.productoId) ?? 0) + l.cantidad);
+    const lineas = [...porProducto.entries()].sort((a, b) => a[0] - b[0]).map(([productoId, cantidad]) => ({ productoId, cantidad }));
+
+    const resultado = await this.dataSource.transaction(async (manager) => {
       const productoRepo = manager.getRepository(Producto);
       const ventaRepo = manager.getRepository(Venta);
       const detalleRepo = manager.getRepository(VentaDetalle);
@@ -50,9 +58,12 @@ export class VentasService {
       const productosAfectados: { producto: Producto; cantidad: number }[] = [];
 
       // 1ª pasada: valida stock de todas las líneas antes de tocar nada.
-      for (const linea of dto.detalles) {
+      for (const linea of lineas) {
+        // pessimistic_write = SELECT ... FOR UPDATE: mientras esta venta no termine, nadie más puede vender
+        // este mismo producto con un stock ya desactualizado (evita vender 2 veces la última unidad).
         const producto = await productoRepo.findOne({
           where: { id: linea.productoId },
+          lock: { mode: 'pessimistic_write' },
         });
         if (!producto || !producto.activo) {
           throw new NotFoundException(
@@ -120,11 +131,17 @@ export class VentasService {
       ventaGuardada.detalles = detallesConstruidos;
       return ventaRepo.save(ventaGuardada);
     });
+    await this.cache.bump('productos'); // el stock cambió: el catálogo cacheado ya no vale
+    return resultado;
   }
 
-  findAll(filtros: { canal?: CanalVenta; estado?: EstadoVenta } = {}): Promise<Venta[]> {
+  // limit/offset opcionales; por defecto 200 filas (máx. 500) para no cargar toda la tabla en memoria.
+  findAll(filtros: { canal?: CanalVenta; estado?: EstadoVenta; limit?: number; offset?: number } = {}): Promise<Venta[]> {
+    const { limit, offset, ...where } = filtros;
     return this.ventaRepository.find({
-      where: filtros,
+      where,
+      take: Math.min(Math.max(limit ?? 200, 1), 500),
+      skip: Math.max(offset ?? 0, 0),
       relations: { cliente: true, detalles: { producto: true } },
       order: { creadoEn: 'DESC' },
     });
@@ -177,13 +194,14 @@ export class VentasService {
   // una venta ya entregada (ver README: para eso se maneja como devolución,
   // que queda fuera de este módulo).
   async anular(id: number, usuarioId: number): Promise<Venta> {
-    return this.dataSource.transaction(async (manager) => {
+    const resultado = await this.dataSource.transaction(async (manager) => {
       const ventaRepo = manager.getRepository(Venta);
       const productoRepo = manager.getRepository(Producto);
       const movimientoRepo = manager.getRepository(MovimientoStock);
 
       const venta = await ventaRepo.findOne({
         where: { id },
+        lock: { mode: 'pessimistic_write', tables: ['ventas'] }, // dos anulaciones simultáneas no devuelven el stock dos veces
         relations: { detalles: { producto: true } },
       });
       if (!venta) throw new NotFoundException('Venta no encontrada');
@@ -196,9 +214,10 @@ export class VentasService {
         );
       }
 
-      for (const detalle of venta.detalles) {
+      for (const detalle of [...venta.detalles].sort((a, b) => a.producto.id - b.producto.id)) {
         const producto = await productoRepo.findOne({
           where: { id: detalle.producto.id },
+          lock: { mode: 'pessimistic_write' },
         });
         if (!producto) continue; // producto eliminado; no hay a qué devolver stock
         producto.stockActual += detalle.cantidad;
@@ -219,5 +238,7 @@ export class VentasService {
       venta.estado = EstadoVenta.ANULADA;
       return ventaRepo.save(venta);
     });
+    await this.cache.bump('productos');
+    return resultado;
   }
 }

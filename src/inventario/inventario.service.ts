@@ -10,6 +10,7 @@ import {
 } from './entities/movimiento-stock.entity';
 import { Producto } from '../productos/entities/producto.entity';
 import { CreateIngresoDto } from './dto/create-ingreso.dto';
+import { CacheService } from '../redis/cache.service';
 
 @Injectable()
 export class InventarioService {
@@ -20,6 +21,7 @@ export class InventarioService {
     private readonly movimientoRepository: Repository<MovimientoStock>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly cache: CacheService,
   ) {}
 
   // Todo el ingreso se procesa en una sola transacción: se crea el
@@ -30,7 +32,7 @@ export class InventarioService {
     dto: CreateIngresoDto,
     usuarioId: number,
   ): Promise<IngresoMercaderia> {
-    return this.dataSource.transaction(async (manager) => {
+    const resultado = await this.dataSource.transaction(async (manager) => {
       const productoRepo = manager.getRepository(Producto);
       const detalleRepo = manager.getRepository(IngresoMercaderiaDetalle);
       const movimientoRepo = manager.getRepository(MovimientoStock);
@@ -47,9 +49,11 @@ export class InventarioService {
       });
       const ingresoGuardado = await ingresoRepo.save(ingreso);
 
-      for (const linea of dto.detalles) {
+      // Orden fijo por producto + FOR UPDATE: sin deadlocks ni pérdida de sumas si dos bodegueros ingresan a la vez.
+      for (const linea of [...dto.detalles].sort((a, b) => a.productoId - b.productoId)) {
         const producto = await productoRepo.findOne({
           where: { id: linea.productoId },
+          lock: { mode: 'pessimistic_write' },
         });
         if (!producto) {
           throw new NotFoundException(
@@ -88,6 +92,8 @@ export class InventarioService {
       ingresoGuardado.detalles = detallesConstruidos;
       return ingresoRepo.save(ingresoGuardado);
     });
+    await this.cache.bump('productos');
+    return resultado;
   }
 
   findAll(): Promise<IngresoMercaderia[]> {
@@ -115,11 +121,11 @@ export class InventarioService {
     motivo: string,
     usuarioId: number,
   ): Promise<Producto> {
-    return this.dataSource.transaction(async (manager) => {
+    const resultado = await this.dataSource.transaction(async (manager) => {
       const productoRepo = manager.getRepository(Producto);
       const movimientoRepo = manager.getRepository(MovimientoStock);
 
-      const producto = await productoRepo.findOne({ where: { id: productoId } });
+      const producto = await productoRepo.findOne({ where: { id: productoId }, lock: { mode: 'pessimistic_write' } });
       if (!producto) throw new NotFoundException('Producto no encontrado');
 
       const nuevoStock = producto.stockActual + delta;
@@ -143,6 +149,8 @@ export class InventarioService {
 
       return producto;
     });
+    await this.cache.bump('productos');
+    return resultado;
   }
 
   historialProducto(productoId: number): Promise<MovimientoStock[]> {

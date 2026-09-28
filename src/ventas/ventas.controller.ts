@@ -81,8 +81,17 @@ export class VentasController {
   @ApiBearerAuth('JWT-auth')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.CAJERO)
-  findAll(@Query('canal') canal?: CanalVenta, @Query('estado') estado?: EstadoVenta) {
-    return this.ventasService.findAll({ canal, estado });
+  findAll(
+    @Query('canal') canal?: CanalVenta,
+    @Query('estado') estado?: EstadoVenta,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.ventasService.findAll({
+      canal, estado,
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+    });
   }
 
   @Get(':id')

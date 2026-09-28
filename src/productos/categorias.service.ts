@@ -9,12 +9,14 @@ import { Repository } from 'typeorm';
 import { Categoria } from './entities/categoria.entity';
 import { CreateCategoriaDto } from './dto/create-categoria.dto';
 import { UpdateCategoriaDto } from './dto/update-categoria.dto';
+import { CacheService } from '../redis/cache.service';
 
 @Injectable()
 export class CategoriasService {
   constructor(
     @InjectRepository(Categoria)
     private readonly categoriaRepository: Repository<Categoria>,
+    private readonly cache: CacheService,
   ) {}
 
   async create(dto: CreateCategoriaDto): Promise<Categoria> {
@@ -25,7 +27,9 @@ export class CategoriasService {
       throw new ConflictException('Ya existe una categoría con ese nombre');
     }
     const categoria = this.categoriaRepository.create(dto);
-    return this.categoriaRepository.save(categoria);
+    const guardada = await this.categoriaRepository.save(categoria);
+    await this.cache.bump('productos'); // los listados de productos incluyen el nombre de la categoría
+    return guardada;
   }
 
   findAll(soloActivas = false): Promise<Categoria[]> {
@@ -46,18 +50,24 @@ export class CategoriasService {
   async update(id: number, dto: UpdateCategoriaDto): Promise<Categoria> {
     const categoria = await this.findOne(id);
     Object.assign(categoria, dto);
-    return this.categoriaRepository.save(categoria);
+    const guardada = await this.categoriaRepository.save(categoria);
+    await this.cache.bump('productos'); // los listados de productos incluyen el nombre de la categoría
+    return guardada;
   }
 
   async desactivar(id: number): Promise<Categoria> {
     const categoria = await this.findOne(id);
     categoria.activo = false;
-    return this.categoriaRepository.save(categoria);
+    const guardada = await this.categoriaRepository.save(categoria);
+    await this.cache.bump('productos'); // los listados de productos incluyen el nombre de la categoría
+    return guardada;
   }
 
   async reactivar(id: number): Promise<Categoria> {
     const categoria = await this.findOne(id);
     categoria.activo = true;
-    return this.categoriaRepository.save(categoria);
+    const guardada = await this.categoriaRepository.save(categoria);
+    await this.cache.bump('productos'); // los listados de productos incluyen el nombre de la categoría
+    return guardada;
   }
 }

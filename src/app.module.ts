@@ -14,23 +14,24 @@ import { VentasModule } from './ventas/ventas.module';
 import { PagosModule } from './pagos/pagos.module';
 import { PersonalModule } from './personal/personal.module';
 import { ProveedoresMercaderiaModule } from './proveedores-mercaderia/proveedores-mercaderia.module';
+import { RedisModule } from './redis/redis.module';
+import { EventsModule } from './events/events.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { HealthController } from './health/health.controller';
+import { buildTypeOrmOptions } from './database/typeorm.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      url: process.env.DATABASE_URL,
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-      autoLoadEntities: true,
-      // synchronize crea/actualiza las tablas solo. Cómodo para arrancar; cuando tengas datos reales
-      // que cuidar, ponlo en false y usa migraciones.
-      synchronize: process.env.DB_SYNC !== 'false',
-    }),
+    // El esquema lo manejan las migraciones (src/database/migrations). Ver typeorm.config.ts.
+    TypeOrmModule.forRoot({ ...buildTypeOrmOptions(), autoLoadEntities: true }),
+    RedisModule,
     TypeOrmModule.forFeature([User, Categoria]),
     AuthModule, UsersModule, ClientesModule, ClientesAuthModule, ProductosModule,
     InventarioModule, VentasModule, PagosModule, PersonalModule, ProveedoresMercaderiaModule,
+    EventsModule, AnalyticsModule,
   ],
+  controllers: [HealthController],
   providers: [SeedService],
 })
 export class AppModule {}

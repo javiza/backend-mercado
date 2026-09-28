@@ -1,0 +1,58 @@
+# Blueprint de Render: crea Postgres + Redis (Key Value) + el backend y los conecta solos.
+# Uso: sube este archivo a la raíz del repo del backend → Render > New > Blueprint.
+# Comprueba planes y regiones vigentes en https://render.com/docs/blueprint-spec (cambian con el tiempo).
+
+databases:
+  - name: supermercado-db
+    plan: basic-256mb          # el plan free de Postgres expira; para datos reales usa uno de pago
+    postgresMajorVersion: "16"
+    region: virginia           # la BD, Redis y el backend deben estar en la MISMA región (usan la red privada)
+
+services:
+  - type: keyvalue             # Redis
+    name: supermercado-redis
+    plan: free
+    region: virginia
+    maxmemoryPolicy: allkeys-lru   # con memoria llena descarta lo menos usado (correcto para caché)
+    ipAllowList: []                # sin acceso desde internet: solo red privada de Render
+
+  - type: web
+    name: supermercado-backend
+    runtime: node
+    region: virginia
+    plan: starter
+    buildCommand: npm ci --include=dev && npm run build
+    # Aplica las migraciones ANTES de cambiar el tráfico a la versión nueva. Si fallan, el deploy se cancela
+    # y sigue sirviendo la versión anterior. (Si tu plan no admite preDeployCommand, quítalo y deja
+    # DB_MIGRATIONS_RUN=true: la app migra sola al arrancar.)
+    preDeployCommand: npm run migration:run:prod
+    startCommand: npm run start:prod
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: supermercado-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: supermercado-redis
+          property: connectionString
+      - key: DB_SSL
+        value: "false"               # conexión interna de Render; para la URL externa pon "true"
+      - key: DB_MIGRATIONS_RUN
+        value: "false"               # ya migra preDeployCommand
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false                  # URL de tu frontend, ej. https://mi-super.vercel.app
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
+      - key: SEED_ADMIN_NOMBRE
+        value: Administrador

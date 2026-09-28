@@ -4,6 +4,7 @@ import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import compression from 'compression';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -11,7 +12,9 @@ async function bootstrap() {
     if (!process.env[k]) throw new Error(`Falta la variable de entorno ${k}`);
   }
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks(); // cierra pool de BD/Redis ordenadamente en cada deploy de Render (SIGTERM)
   app.use(helmet());
+  app.use(compression());
   app.enableCors({ origin: (process.env.CORS_ORIGIN || '').split(',').filter(Boolean), credentials: true });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   // Oculta campos @Exclude() (hash de contraseña, tokens) en TODAS las respuestas.
